@@ -22,7 +22,8 @@ cp .env.example .env
 ```
 
 Required environment variables:
-- `B2_ACCOUNT2_ENDPOINT`, `B2_ACCOUNT2_KEY_ID`, `B2_ACCOUNT2_APPLICATION_KEY`, `B2_ACCOUNT2_BUCKET` - Backblaze B2 credentials
+- `ACCOUNT_1_ENDPOINT`, `ACCOUNT_1_KEY_ID`, `ACCOUNT_1_APPLICATION_KEY`, `ACCOUNT_1_BUCKET` - Backblaze B2 heavy storage credentials
+- `ACCOUNT_2_ENDPOINT`, `ACCOUNT_2_KEY_ID`, `ACCOUNT_2_APPLICATION_KEY`, `ACCOUNT_2_BUCKET` - Backblaze B2 light storage credentials
 - `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` - Supabase credentials
 - `JWT_SECRET` - Secret for API authentication
 - `INSTAPODS_HOST`, `INSTAPODS_PORT` - Server configuration

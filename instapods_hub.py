@@ -167,7 +167,7 @@ async def upload_file(
         
         # Get heavy bucket credentials if file is large
         if file_size >= 50 * 1024 * 1024:  # 50MB
-            heavy_bucket = os.getenv("B2_ACCOUNT1_BUCKET")
+            heavy_bucket = os.getenv("ACCOUNT_1_BUCKET")
             if heavy_bucket:
                 bucket_name = heavy_bucket
                 # Note: In production, you'd need to initialize a separate S3 client
