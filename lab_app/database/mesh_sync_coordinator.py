@@ -704,7 +704,7 @@ class MeshSyncCoordinator:
                 ContentType='application/gzip'
             )
             
-            # Save the max timestamp of transactions just pushed
+            # Save the max timestamp of transactions just pushed (only after successful upload)
             max_timestamp = max(tx['timestamp'] for tx in transactions)
             try:
                 cursor = self.conn.cursor()
@@ -868,6 +868,10 @@ class MeshSyncCoordinator:
     
     def start_sync_loop(self) -> None:
         """Start the background sync loop."""
+        if self.hub_mode:
+            print("[mesh_sync] ERROR: Cannot start internal sync loop in hub mode - hub manages its own sync loop")
+            return
+        
         if self.sync_running:
             print("[mesh_sync] Sync loop already running")
             return
