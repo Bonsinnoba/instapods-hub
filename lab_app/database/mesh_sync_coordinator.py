@@ -55,7 +55,8 @@ class MeshSyncCoordinator:
                  b2_bucket_name: Optional[str] = None,
                  b2_endpoint_url: Optional[str] = None,
                  b2_access_key_id: Optional[str] = None,
-                 b2_secret_access_key: Optional[str] = None):
+                 b2_secret_access_key: Optional[str] = None,
+                 hub_mode: bool = False):
         """
         Initialize the Mesh Sync Coordinator.
         
@@ -74,6 +75,7 @@ class MeshSyncCoordinator:
         self.b2_endpoint_url = b2_endpoint_url
         self.b2_access_key_id = b2_access_key_id
         self.b2_secret_access_key = b2_secret_access_key
+        self.hub_mode = hub_mode
         
         self.conn: Optional[sqlite3.Connection] = None
         self.s3_client = None
@@ -151,6 +153,15 @@ class MeshSyncCoordinator:
             self.conn.execute("PRAGMA foreign_keys = ON")
             self.conn.row_factory = sqlite3.Row
             print(f"[mesh_sync] Database connection established: {self.db_path}")
+            
+            # Create mesh_sync_state table if not exists
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS mesh_sync_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+            self.conn.commit()
         except sqlite3.Error as e:
             print(f"[mesh_sync] Database connection error: {e}")
             raise
@@ -653,8 +664,19 @@ class MeshSyncCoordinator:
             return False
         
         try:
-            # Get pending transactions
-            transactions = self.get_pending_transactions()
+            # Load last_pushed_ts from mesh_sync_state
+            last_pushed_ts = 0
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute("SELECT value FROM mesh_sync_state WHERE key = 'last_pushed_ts'")
+                result = cursor.fetchone()
+                if result:
+                    last_pushed_ts = int(result['value'])
+            except Exception as e:
+                print(f"[mesh_sync] Warning: Failed to load last_pushed_ts: {e}")
+            
+            # Get pending transactions since last push
+            transactions = self.get_pending_transactions(since_timestamp=last_pushed_ts)
             
             if not transactions:
                 print("[mesh_sync] No pending transactions to push")
@@ -681,6 +703,16 @@ class MeshSyncCoordinator:
                 Body=compressed_data,
                 ContentType='application/gzip'
             )
+            
+            # Save the max timestamp of transactions just pushed
+            max_timestamp = max(tx['timestamp'] for tx in transactions)
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute("INSERT OR REPLACE INTO mesh_sync_state (key, value) VALUES ('last_pushed_ts', ?)", (str(max_timestamp),))
+                self.conn.commit()
+                print(f"[mesh_sync] Saved last_pushed_ts: {max_timestamp}")
+            except Exception as e:
+                print(f"[mesh_sync] Warning: Failed to save last_pushed_ts: {e}")
             
             print(f"[mesh_sync] Pushed {len(transactions)} transactions to cloud: {bundle_filename}")
             return True
@@ -729,14 +761,20 @@ class MeshSyncCoordinator:
                 print("[mesh_sync] No transactions in cloud")
                 return 0
             
-            # Get latest timestamp from local transactions
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT MAX(timestamp) as max_ts FROM mesh_transactions")
-            result = cursor.fetchone()
-            last_timestamp = result['max_ts'] if result['max_ts'] else 0
+            # Load last_pulled_bundle_ts from mesh_sync_state (bundle filename timestamps, not transaction timestamps)
+            last_pulled_bundle_ts = 0
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute("SELECT value FROM mesh_sync_state WHERE key = 'last_pulled_bundle_ts'")
+                result = cursor.fetchone()
+                if result:
+                    last_pulled_bundle_ts = int(result['value'])
+            except Exception as e:
+                print(f"[mesh_sync] Warning: Failed to load last_pulled_bundle_ts: {e}")
             
             # Filter and download new transaction bundles
             new_transactions = []
+            max_bundle_timestamp_seen = last_pulled_bundle_ts
             
             for obj in response['Contents']:
                 key = obj['Key']
@@ -750,8 +788,12 @@ class MeshSyncCoordinator:
                     timestamp_str = key.split('_')[-1].replace('.json.gz', '')
                     bundle_timestamp = int(timestamp_str)
                     
-                    # Skip if bundle is older than our last sync
-                    if bundle_timestamp <= last_timestamp:
+                    # Track the highest bundle timestamp seen
+                    if bundle_timestamp > max_bundle_timestamp_seen:
+                        max_bundle_timestamp_seen = bundle_timestamp
+                    
+                    # Skip if bundle is older than or equal to our last pulled bundle timestamp
+                    if bundle_timestamp <= last_pulled_bundle_ts:
                         continue
                 except (ValueError, IndexError):
                     continue
@@ -784,6 +826,16 @@ class MeshSyncCoordinator:
                     continue
                 
                 new_transactions.extend(bundle.get('transactions', []))
+            
+            # Save the highest bundle timestamp seen to mesh_sync_state
+            if max_bundle_timestamp_seen > last_pulled_bundle_ts:
+                try:
+                    cursor = self.conn.cursor()
+                    cursor.execute("INSERT OR REPLACE INTO mesh_sync_state (key, value) VALUES ('last_pulled_bundle_ts', ?)", (str(max_bundle_timestamp_seen),))
+                    self.conn.commit()
+                    print(f"[mesh_sync] Saved last_pulled_bundle_ts: {max_bundle_timestamp_seen}")
+                except Exception as e:
+                    print(f"[mesh_sync] Warning: Failed to save last_pulled_bundle_ts: {e}")
             
             if new_transactions:
                 applied = self.apply_incoming_transactions(new_transactions)
