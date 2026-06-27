@@ -10,6 +10,8 @@ All files are encrypted locally using AES-256-GCM before upload for zero-knowled
 """
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import threading
 import time
 import logging
@@ -18,7 +20,6 @@ from typing import Optional, Dict, Any
 import sqlite3
 import zlib
 from io import BytesIO
-
 # Import secure vault for encryption
 from .secure_vault import SecureFileVault, InvalidKeyError, CorruptedPayloadError
 
