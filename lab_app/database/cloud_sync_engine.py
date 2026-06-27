@@ -3,8 +3,8 @@ Dual-Account Backblaze B2 Synchronization Engine
 
 This module handles dynamic routing of files to separate Backblaze B2 accounts
 based on a 50MB size threshold for 20GB free tier maximization:
-- Files < 50MB: Account #1 (Light Storage Bucket)
-- Files >= 50MB: Account #2 (Heavy Storage Bucket)
+- Files >= 50MB: Account #1 (Heavy Storage Bucket)
+- Files < 50MB: Account #2 (Light Storage Bucket)
 
 All files are encrypted locally using AES-256-GCM before upload for zero-knowledge privacy.
 """
@@ -20,6 +20,8 @@ from typing import Optional, Dict, Any
 import sqlite3
 import zlib
 from io import BytesIO
+from botocore.exceptions import ClientError
+
 # Import secure vault for encryption
 from .secure_vault import SecureFileVault, InvalidKeyError, CorruptedPayloadError
 
@@ -134,8 +136,6 @@ class DualAccountSyncEngine:
                 region_name='eu-central-003'
             )
             
-            # Test connection
-            self.account1_client.list_buckets()
             logger.info("Account #1 boto3 client initialized successfully")
             return True
             
@@ -171,8 +171,6 @@ class DualAccountSyncEngine:
                 region_name='eu-central-003'
             )
             
-            # Test connection
-            self.account2_client.list_buckets()
             logger.info("Account #2 boto3 client initialized successfully")
             return True
             
@@ -289,9 +287,12 @@ class DualAccountSyncEngine:
                 logger.info(f"File {final_file_name} already exists in Account #1, skipping upload")
                 public_url = f"{self.config['ACCOUNT_1_ENDPOINT']}/{bucket_name}/{final_file_name}"
                 return public_url
-            except self.account1_client.exceptions.NoSuchKey:
-                # File doesn't exist, proceed with upload
-                pass
+            except ClientError as e:
+                if e.response['Error']['Code'] == '404':
+                    # File doesn't exist on B2, proceed with upload
+                    pass
+                else:
+                    raise  # re-raise any unexpected errors
             
             logger.info(f"Uploading {file_name} to Account #1 (Heavy Storage)")
             
@@ -376,9 +377,12 @@ class DualAccountSyncEngine:
                 logger.info(f"File {final_file_name} already exists in Account #2, skipping upload")
                 public_url = f"{self.config['ACCOUNT_2_ENDPOINT']}/{bucket_name}/{final_file_name}"
                 return public_url
-            except self.account2_client.exceptions.NoSuchKey:
-                # File doesn't exist, proceed with upload
-                pass
+            except ClientError as e:
+                if e.response['Error']['Code'] == '404':
+                    # File doesn't exist on B2, proceed with upload
+                    pass
+                else:
+                    raise  # re-raise any unexpected errors
             
             logger.info(f"Uploading {file_name} to Account #2 (Light Storage)")
             
@@ -535,7 +539,7 @@ class DualAccountSyncEngine:
     
     def _delete_from_cloud(self, file_name: str, file_size: int = None) -> bool:
         """
-        Delete a file from cloud storage (target account only based on file size).
+        Delete a file from cloud storage (target account only based on file size, or both if size unknown).
         
         Args:
             file_name: Name of the file to delete
@@ -544,31 +548,47 @@ class DualAccountSyncEngine:
         Returns:
             True if deletion successful
         """
-        # Determine target account based on file size
-        if file_size is not None and file_size >= self.size_threshold_bytes:
-            # File belongs to Account #1 (Heavy Storage)
-            target_client = self.account1_client
-            target_bucket = self.config["ACCOUNT_1_BUCKET"]
-            account_name = "Account #1"
-            logger.info(f"Large file ({file_size / 1024 / 1024:.2f} MB), targeting Account #1 (Heavy Storage)")
+        targets = []
+        
+        # Determine target accounts based on file size
+        if file_size is not None:
+            if file_size >= self.size_threshold_bytes:
+                targets.append((self.account1_client, self.config["ACCOUNT_1_BUCKET"], "Account #1 (Heavy)"))
+            else:
+                targets.append((self.account2_client, self.config["ACCOUNT_2_BUCKET"], "Account #2 (Light)"))
         else:
-            # File belongs to Account #2 (Light Storage)
-            target_client = self.account2_client
-            target_bucket = self.config["ACCOUNT_2_BUCKET"]
-            account_name = "Account #2"
-            logger.info(f"Small file ({file_size / 1024 / 1024:.2f} MB if known), targeting Account #2 (Light Storage)")
+            logger.info(f"File size unknown for {file_name}. Attempting deletion from both Account #1 and Account #2 buckets.")
+            if self.account1_client:
+                targets.append((self.account1_client, self.config["ACCOUNT_1_BUCKET"], "Account #1 (Heavy)"))
+            if self.account2_client:
+                targets.append((self.account2_client, self.config["ACCOUNT_2_BUCKET"], "Account #2 (Light)"))
         
-        if not target_client:
-            logger.error(f"{account_name} client not initialized - cannot delete {file_name}")
+        if not targets:
+            logger.error(f"No initialized cloud storage clients available for deleting {file_name}")
             return False
-        
-        try:
-            target_client.delete_object(Bucket=target_bucket, Key=file_name)
-            logger.info(f"Successfully deleted {file_name} from {account_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to delete {file_name} from {account_name}: {e}")
-            return False
+            
+        success = True
+        for client, bucket, account_name in targets:
+            if not client:
+                logger.error(f"{account_name} client not initialized - cannot delete {file_name}")
+                success = False
+                continue
+                
+            keys_to_delete = [file_name]
+            if not file_name.endswith('.enc') and not file_name.endswith('.gz'):
+                keys_to_delete.extend([f"{file_name}.enc", f"{file_name}.gz"])
+                
+            for key in keys_to_delete:
+                try:
+                    client.delete_object(Bucket=bucket, Key=key)
+                    logger.info(f"Successfully requested deletion of '{key}' from {account_name} bucket '{bucket}'")
+                except client.exceptions.NoSuchKey:
+                    logger.warning(f"File '{key}' not found in {account_name} bucket '{bucket}' (may already be deleted)")
+                except Exception as e:
+                    logger.error(f"Failed to delete '{key}' from {account_name} bucket '{bucket}': {e}")
+                    success = False
+                    
+        return success
     
     def _clear_deletion_log(self, db_path: str, log_id: int) -> bool:
         """
