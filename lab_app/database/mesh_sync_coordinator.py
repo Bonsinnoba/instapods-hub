@@ -464,13 +464,14 @@ class MeshSyncCoordinator:
                 cursor.execute("""
                     SELECT tx_id, table_name, operation, payload, timestamp, device_origin
                     FROM mesh_transactions
-                    WHERE timestamp > ?
+                    WHERE timestamp > ? AND is_synced = 0
                     ORDER BY timestamp ASC
                 """, (since_timestamp,))
             else:
                 cursor.execute("""
                     SELECT tx_id, table_name, operation, payload, timestamp, device_origin
                     FROM mesh_transactions
+                    WHERE is_synced = 0
                     ORDER BY timestamp ASC
                 """)
             
@@ -703,6 +704,17 @@ class MeshSyncCoordinator:
                 Body=compressed_data,
                 ContentType='application/gzip'
             )
+            
+            # Mark transactions as synced
+            tx_ids = [tx['tx_id'] for tx in transactions]
+            cursor = self.conn.cursor()
+            placeholders = ','.join('?' * len(tx_ids))
+            cursor.execute(f"""
+                UPDATE mesh_transactions 
+                SET is_synced = 1 
+                WHERE tx_id IN ({placeholders})
+            """, tx_ids)
+            self.conn.commit()
             
             # Save the max timestamp of transactions just pushed (only after successful upload)
             max_timestamp = max(tx['timestamp'] for tx in transactions)

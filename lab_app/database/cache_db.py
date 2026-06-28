@@ -148,6 +148,9 @@ class CacheDatabase:
             # Create mesh_transactions table for decentralized sync
             self._create_mesh_transactions_table(cursor)
             
+            # Migration: Add is_synced column to mesh_transactions
+            self._migrate_mesh_transactions_is_synced(cursor)
+            
             self.conn.commit()
             print(f"Database initialized successfully at: {os.path.abspath(self.db_path)}")
             
@@ -332,6 +335,27 @@ class CacheDatabase:
             except sqlite3.Error as e:
                 print(f"[db] Migration warning (is_tombstone for {table}): {e}")
                 # Don't raise error - migration is optional
+
+    def _migrate_mesh_transactions_is_synced(self, cursor: sqlite3.Cursor) -> None:
+        """
+        Add is_synced column to mesh_transactions table for tracking sync status.
+        
+        Args:
+            cursor: Database cursor
+        """
+        try:
+            cursor.execute("PRAGMA table_info(mesh_transactions)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'is_synced' not in columns:
+                print("[db] Migrating mesh_transactions table: adding is_synced column...")
+                cursor.execute("ALTER TABLE mesh_transactions ADD COLUMN is_synced INTEGER DEFAULT 0")
+                print("[db] Migration complete: is_synced column added to mesh_transactions")
+            else:
+                print("[db] mesh_transactions table already has is_synced column")
+        except sqlite3.Error as e:
+            print(f"[db] Migration warning (is_synced for mesh_transactions): {e}")
+            # Don't raise error - migration is optional
     
     def _create_phase4_tables(self, cursor: sqlite3.Cursor) -> None:
         """
@@ -830,7 +854,8 @@ class CacheDatabase:
                 operation TEXT NOT NULL,
                 payload TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
-                device_origin TEXT NOT NULL
+                device_origin TEXT NOT NULL,
+                is_synced INTEGER DEFAULT 0
             )
         """)
         
