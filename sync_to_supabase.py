@@ -7,6 +7,10 @@ import boto3
 import json
 from supabase import create_client
 import uuid
+from dotenv import load_dotenv
+
+# Load environment variables from .env file if it exists
+load_dotenv()
 
 # Configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL")
