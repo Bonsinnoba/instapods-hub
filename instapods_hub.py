@@ -109,6 +109,21 @@ async def health_check():
     }
 
 
+@app.get("/debug")
+async def debug_info():
+    """
+    Debug endpoint to check initialization status.
+    """
+    return {
+        "supabase_available": SUPABASE_AVAILABLE,
+        "supabase_client_initialized": supabase_client is not None,
+        "supabase_url_set": bool(os.getenv("SUPABASE_URL")),
+        "supabase_key_set": bool(os.getenv("SUPABASE_SERVICE_KEY")),
+        "db_initialized": db is not None,
+        "mesh_coordinator_initialized": mesh_coordinator is not None,
+    }
+
+
 @app.get("/signed-url")
 async def get_signed_url(
     filename: str = Query(..., description="Filename to generate signed URL for"),
