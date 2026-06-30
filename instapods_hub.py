@@ -387,30 +387,30 @@ async def get_project(project_id: int):
 
 
 @app.get("/api/experiments")
-async def get_experiments(project_id: Optional[int] = None):
-    """Get all experiments from Supabase (rd_logs table), optionally filtered by project ID."""
+async def get_experiments(project_id: Optional[str] = None):
+    """Get all experiments from Supabase (experiments table), optionally filtered by project ID."""
     if not supabase_client:
         raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
-        query = supabase_client.table('rd_logs').select('*')
+        query = supabase_client.table('experiments').select('*')
         if project_id:
             query = query.eq('project_id', project_id)
         response = query.execute()
         return response.data
     except Exception as e:
         # Table might not exist - return empty array for graceful degradation
-        if 'rd_logs' in str(e) or 'PGRST205' in str(e):
+        if 'experiments' in str(e) or 'PGRST205' in str(e):
             return []
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/experiments/{experiment_id}")
-async def get_experiment(experiment_id: int):
-    """Get a specific experiment by ID from Supabase (rd_logs table)."""
+async def get_experiment(experiment_id: str):
+    """Get a specific experiment by ID from Supabase (experiments table)."""
     if not supabase_client:
         raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
-        response = supabase_client.table('rd_logs').select('*').eq('id', experiment_id).execute()
+        response = supabase_client.table('experiments').select('*').eq('id', experiment_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Experiment not found")
         return response.data[0]
@@ -418,7 +418,7 @@ async def get_experiment(experiment_id: int):
         raise
     except Exception as e:
         # Table might not exist - return 404 for graceful degradation
-        if 'rd_logs' in str(e) or 'PGRST205' in str(e):
+        if 'experiments' in str(e) or 'PGRST205' in str(e):
             raise HTTPException(status_code=404, detail="Experiment not found")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -438,8 +438,28 @@ async def get_resources(project_id: Optional[int] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/notes")
+async def get_notes(project_id: Optional[str] = None, experiment_id: Optional[str] = None):
+    """Get all notes (notebook_entries) from Supabase, optionally filtered by project ID or experiment ID."""
+    if not supabase_client:
+        raise HTTPException(status_code=503, detail="Supabase client not initialized")
+    try:
+        query = supabase_client.table('notebook_entries').select('*')
+        if project_id:
+            query = query.eq('project_id', project_id)
+        if experiment_id:
+            query = query.eq('experiment_id', experiment_id)
+        response = query.execute()
+        return response.data
+    except Exception as e:
+        # Table might not exist - return empty array for graceful degradation
+        if 'notebook_entries' in str(e) or 'PGRST205' in str(e):
+            return []
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/findings")
-async def get_findings(experiment_id: Optional[int] = None, severity: Optional[str] = None):
+async def get_findings(experiment_id: Optional[str] = None, severity: Optional[str] = None):
     """Get all findings from Supabase, optionally filtered by experiment ID or severity."""
     if not supabase_client:
         raise HTTPException(status_code=503, detail="Supabase client not initialized")
