@@ -30,6 +30,13 @@ from database.mesh_sync_coordinator import MeshSyncCoordinator
 from database.cache_db import CacheDatabase
 
 try:
+    from supabase import create_client, Client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+    Client = None
+
+try:
     import boto3
     BOTO3_AVAILABLE = True
 except ImportError:
@@ -57,6 +64,9 @@ account2_s3_client = None
 
 # Database for API endpoints
 db: Optional[CacheDatabase] = None
+
+# Supabase client for cloud data access
+supabase_client: Optional[Client] = None
 
 
 def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)) -> bool:
@@ -235,26 +245,26 @@ async def upload_file(
 
 @app.get("/api/projects")
 async def get_projects():
-    """Get all projects for mobile app."""
-    if not db:
-        raise HTTPException(status_code=503, detail="Database not initialized")
+    """Get all projects for mobile app from Supabase."""
+    if not supabase_client:
+        raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
-        projects = db.get_all_projects()
-        return {"projects": projects}
+        response = supabase_client.table('projects').select('*').execute()
+        return {"projects": response.data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/projects/{project_id}")
 async def get_project(project_id: int):
-    """Get a specific project by ID."""
-    if not db:
-        raise HTTPException(status_code=503, detail="Database not initialized")
+    """Get a specific project by ID from Supabase."""
+    if not supabase_client:
+        raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
-        project = db.get_project_by_id(project_id)
-        if not project:
+        response = supabase_client.table('projects').select('*').eq('id', project_id).execute()
+        if not response.data:
             raise HTTPException(status_code=404, detail="Project not found")
-        return {"success": True, "data": project}
+        return {"success": True, "data": response.data[0]}
     except HTTPException:
         raise
     except Exception as e:
@@ -263,29 +273,29 @@ async def get_project(project_id: int):
 
 @app.get("/api/experiments")
 async def get_experiments(project_id: Optional[int] = None):
-    """Get all experiments, optionally filtered by project ID."""
-    if not db:
-        raise HTTPException(status_code=503, detail="Database not initialized")
+    """Get all experiments from Supabase, optionally filtered by project ID."""
+    if not supabase_client:
+        raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
+        query = supabase_client.table('experiments').select('*')
         if project_id:
-            experiments = db.get_experiments_by_project(project_id)
-        else:
-            experiments = db.get_all_experiments()
-        return experiments
+            query = query.eq('project_id', project_id)
+        response = query.execute()
+        return response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/experiments/{experiment_id}")
 async def get_experiment(experiment_id: int):
-    """Get a specific experiment by ID."""
-    if not db:
-        raise HTTPException(status_code=503, detail="Database not initialized")
+    """Get a specific experiment by ID from Supabase."""
+    if not supabase_client:
+        raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
-        experiment = db.get_experiment_by_id(experiment_id)
-        if not experiment:
+        response = supabase_client.table('experiments').select('*').eq('id', experiment_id).execute()
+        if not response.data:
             raise HTTPException(status_code=404, detail="Experiment not found")
-        return experiment
+        return response.data[0]
     except HTTPException:
         raise
     except Exception as e:
@@ -294,32 +304,32 @@ async def get_experiment(experiment_id: int):
 
 @app.get("/api/resources")
 async def get_resources(project_id: Optional[int] = None):
-    """Get all resources (documents), optionally filtered by project ID."""
-    if not db:
-        raise HTTPException(status_code=503, detail="Database not initialized")
+    """Get all resources (documents) from Supabase, optionally filtered by project ID."""
+    if not supabase_client:
+        raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
+        query = supabase_client.table('knowledge_vault').select('*')
         if project_id:
-            resources = db.get_documents(project_id=project_id)
-        else:
-            resources = db.get_all_documents()
-        return resources
+            query = query.eq('project_id', project_id)
+        response = query.execute()
+        return response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/findings")
 async def get_findings(experiment_id: Optional[int] = None, severity: Optional[str] = None):
-    """Get all findings, optionally filtered by experiment ID or severity."""
-    if not db:
-        raise HTTPException(status_code=503, detail="Database not initialized")
+    """Get all findings from Supabase, optionally filtered by experiment ID or severity."""
+    if not supabase_client:
+        raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
+        query = supabase_client.table('findings').select('*')
         if experiment_id:
-            findings = db.get_findings_by_experiment(experiment_id)
-        elif severity:
-            findings = db.get_findings_by_severity(severity)
-        else:
-            findings = db.get_all_findings()
-        return {"findings": findings}
+            query = query.eq('experiment_id', experiment_id)
+        if severity:
+            query = query.eq('severity', severity)
+        response = query.execute()
+        return {"findings": response.data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -418,7 +428,7 @@ def initialize_file_storage_clients():
 
 def initialize_mesh_coordinator():
     """Initialize the MeshSyncCoordinator for Instapods Hub."""
-    global mesh_coordinator, db
+    global mesh_coordinator, db, supabase_client
     
     # Load environment variables
     db_path = os.getenv("DATABASE_PATH", "local_cache.db")
@@ -428,9 +438,24 @@ def initialize_mesh_coordinator():
     b2_access_key_id = os.getenv("MESH_SYNC_KEY_ID", "")
     b2_secret_access_key = os.getenv("MESH_SYNC_APPLICATION_KEY", "")
     
-    # Initialize database for API endpoints
+    # Initialize database for API endpoints (fallback)
     db = CacheDatabase(db_path=db_path)
     print(f"[instapods_hub] CacheDatabase initialized with path: {db_path}")
+    
+    # Initialize Supabase client for cloud data access
+    if SUPABASE_AVAILABLE:
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+        if supabase_url and supabase_key:
+            try:
+                supabase_client = create_client(supabase_url, supabase_key)
+                print(f"[instapods_hub] Supabase client initialized")
+            except Exception as e:
+                print(f"[instapods_hub] Failed to initialize Supabase client: {e}")
+        else:
+            print("[instapods_hub] Supabase credentials not configured")
+    else:
+        print("[instapods_hub] Supabase library not available")
     
     mesh_coordinator = MeshSyncCoordinator(
         db_path=db_path,
