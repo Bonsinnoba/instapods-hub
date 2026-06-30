@@ -388,29 +388,29 @@ async def get_project(project_id: int):
 
 @app.get("/api/experiments")
 async def get_experiments(project_id: Optional[int] = None):
-    """Get all experiments from Supabase, optionally filtered by project ID."""
+    """Get all experiments from Supabase (rd_logs table), optionally filtered by project ID."""
     if not supabase_client:
         raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
-        query = supabase_client.table('experiment').select('*')
+        query = supabase_client.table('rd_logs').select('*')
         if project_id:
             query = query.eq('project_id', project_id)
         response = query.execute()
         return response.data
     except Exception as e:
         # Table might not exist - return empty array for graceful degradation
-        if 'experiment' in str(e) or 'PGRST205' in str(e):
+        if 'rd_logs' in str(e) or 'PGRST205' in str(e):
             return []
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/experiments/{experiment_id}")
 async def get_experiment(experiment_id: int):
-    """Get a specific experiment by ID from Supabase."""
+    """Get a specific experiment by ID from Supabase (rd_logs table)."""
     if not supabase_client:
         raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
-        response = supabase_client.table('experiment').select('*').eq('id', experiment_id).execute()
+        response = supabase_client.table('rd_logs').select('*').eq('id', experiment_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Experiment not found")
         return response.data[0]
@@ -418,7 +418,7 @@ async def get_experiment(experiment_id: int):
         raise
     except Exception as e:
         # Table might not exist - return 404 for graceful degradation
-        if 'experiment' in str(e) or 'PGRST205' in str(e):
+        if 'rd_logs' in str(e) or 'PGRST205' in str(e):
             raise HTTPException(status_code=404, detail="Experiment not found")
         raise HTTPException(status_code=500, detail=str(e))
 
