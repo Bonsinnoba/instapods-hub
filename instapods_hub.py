@@ -392,7 +392,7 @@ async def get_experiments(project_id: Optional[int] = None):
     if not supabase_client:
         raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
-        query = supabase_client.table('experiments').select('*')
+        query = supabase_client.table('experiment').select('*')
         if project_id:
             query = query.eq('project_id', project_id)
         response = query.execute()
@@ -407,7 +407,7 @@ async def get_experiment(experiment_id: int):
     if not supabase_client:
         raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
-        response = supabase_client.table('experiments').select('*').eq('id', experiment_id).execute()
+        response = supabase_client.table('experiment').select('*').eq('id', experiment_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Experiment not found")
         return response.data[0]
