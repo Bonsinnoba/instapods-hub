@@ -371,7 +371,7 @@ async def get_projects():
 
 
 @app.get("/api/projects/{project_id}")
-async def get_project(project_id: int):
+async def get_project(project_id: str):
     """Get a specific project by ID from Supabase."""
     if not supabase_client:
         raise HTTPException(status_code=503, detail="Supabase client not initialized")
@@ -424,7 +424,7 @@ async def get_experiment(experiment_id: str):
 
 
 @app.get("/api/resources")
-async def get_resources(project_id: Optional[int] = None):
+async def get_resources(project_id: Optional[str] = None):
     """Get all resources (documents) from Supabase, optionally filtered by project ID."""
     if not supabase_client:
         raise HTTPException(status_code=503, detail="Supabase client not initialized")
