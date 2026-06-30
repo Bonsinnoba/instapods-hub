@@ -398,6 +398,9 @@ async def get_experiments(project_id: Optional[int] = None):
         response = query.execute()
         return response.data
     except Exception as e:
+        # Table might not exist - return empty array for graceful degradation
+        if 'experiment' in str(e) or 'PGRST205' in str(e):
+            return []
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -414,6 +417,9 @@ async def get_experiment(experiment_id: int):
     except HTTPException:
         raise
     except Exception as e:
+        # Table might not exist - return 404 for graceful degradation
+        if 'experiment' in str(e) or 'PGRST205' in str(e):
+            raise HTTPException(status_code=404, detail="Experiment not found")
         raise HTTPException(status_code=500, detail=str(e))
 
 
