@@ -46,11 +46,111 @@ except ImportError:
 security = HTTPBearer()
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 
+
+# Initialization functions (must be defined before app)
+
+def initialize_file_storage_clients():
+    """Initialize S3 clients for file storage buckets."""
+    global account1_s3_client, account2_s3_client
+    
+    if not BOTO3_AVAILABLE:
+        print("[instapods_hub] boto3 not available - file upload disabled")
+        return
+    
+    # Initialize Account #1 client (Heavy Storage)
+    account1_endpoint = os.getenv("ACCOUNT_1_ENDPOINT")
+    account1_key_id = os.getenv("ACCOUNT_1_KEY_ID")
+    account1_app_key = os.getenv("ACCOUNT_1_APPLICATION_KEY")
+    
+    if account1_key_id and account1_app_key:
+        try:
+            account1_s3_client = boto3.client(
+                's3',
+                endpoint_url=account1_endpoint,
+                aws_access_key_id=account1_key_id,
+                aws_secret_access_key=account1_app_key
+            )
+            print(f"[instapods_hub] Account #1 client initialized")
+        except Exception as e:
+            print(f"[instapods_hub] Failed to initialize Account #1 client: {e}")
+    
+    # Initialize Account #2 client (Light Storage)
+    account2_endpoint = os.getenv("ACCOUNT_2_ENDPOINT")
+    account2_key_id = os.getenv("ACCOUNT_2_KEY_ID")
+    account2_app_key = os.getenv("ACCOUNT_2_APPLICATION_KEY")
+    
+    if account2_key_id and account2_app_key:
+        try:
+            account2_s3_client = boto3.client(
+                's3',
+                endpoint_url=account2_endpoint,
+                aws_access_key_id=account2_key_id,
+                aws_secret_access_key=account2_app_key
+            )
+            print(f"[instapods_hub] Account #2 client initialized")
+        except Exception as e:
+            print(f"[instapods_hub] Failed to initialize Account #2 client: {e}")
+
+
+def initialize_mesh_coordinator():
+    """Initialize the MeshSyncCoordinator for Instapods Hub."""
+    global mesh_coordinator, db, supabase_client
+    
+    # Load environment variables
+    db_path = os.getenv("DATABASE_PATH", "local_cache.db")
+    device_id = os.getenv("INSTAPODS_DEVICE_ID", "INSTAPODS_HUB")
+    b2_bucket_name = os.getenv("MESH_SYNC_BUCKET", "lab-mesh-sync")
+    b2_endpoint_url = os.getenv("MESH_SYNC_ENDPOINT", "https://s3.eu-central-003.backblazeb2.com")
+    b2_access_key_id = os.getenv("MESH_SYNC_KEY_ID", "")
+    b2_secret_access_key = os.getenv("MESH_SYNC_APPLICATION_KEY", "")
+    
+    # Initialize database for API endpoints (fallback)
+    db = CacheDatabase(db_path=db_path)
+    print(f"[instapods_hub] CacheDatabase initialized with path: {db_path}")
+    
+    # Initialize Supabase client for cloud data access
+    if SUPABASE_AVAILABLE:
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+        if supabase_url and supabase_key:
+            try:
+                supabase_client = create_client(supabase_url, supabase_key)
+                print(f"[instapods_hub] Supabase client initialized")
+            except Exception as e:
+                print(f"[instapods_hub] Failed to initialize Supabase client: {e}")
+        else:
+            print("[instapods_hub] Supabase credentials not configured")
+    else:
+        print("[instapods_hub] Supabase library not available")
+    
+    mesh_coordinator = MeshSyncCoordinator(
+        db_path=db_path,
+        device_id=device_id,
+        b2_bucket_name=b2_bucket_name,
+        b2_endpoint_url=b2_endpoint_url,
+        b2_access_key_id=b2_access_key_id,
+        b2_secret_access_key=b2_secret_access_key,
+        hub_mode=True  # Hub is the sole B2 poller; devices pull from Supabase
+    )
+    
+    print(f"[instapods_hub] MeshSyncCoordinator initialized with device_id: {device_id}")
+
+
+def start_background_sync():
+    """Start the background sync loop in a separate thread."""
+    global sync_running
+    sync_running = True
+    sync_thread = threading.Thread(target=sync_loop, daemon=True)
+    sync_thread.start()
+    print("[instapods_hub] Background sync loop started (30s interval)")
+
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Instapods Hub",
     description="Always-on cloud sync coordinator for Lab R&D mesh",
-    version="1.0.0"
+    version="1.0.0",
+    on_startup=[initialize_file_storage_clients, initialize_mesh_coordinator, start_background_sync]
 )
 
 # Global state
@@ -389,104 +489,8 @@ def sync_loop():
         time.sleep(30)
 
 
-def start_background_sync():
-    """Start the background sync loop in a separate thread."""
-    global sync_running
-    sync_running = True
-    sync_thread = threading.Thread(target=sync_loop, daemon=True)
-    sync_thread.start()
-    print("[instapods_hub] Background sync loop started (30s interval)")
-
-
-def initialize_file_storage_clients():
-    """Initialize S3 clients for file storage buckets."""
-    global account1_s3_client, account2_s3_client
-    
-    if not BOTO3_AVAILABLE:
-        print("[instapods_hub] boto3 not available - file upload disabled")
-        return
-    
-    # Initialize Account #1 client (Heavy Storage)
-    account1_endpoint = os.getenv("ACCOUNT_1_ENDPOINT")
-    account1_key_id = os.getenv("ACCOUNT_1_KEY_ID")
-    account1_app_key = os.getenv("ACCOUNT_1_APPLICATION_KEY")
-    
-    if account1_key_id and account1_app_key:
-        try:
-            account1_s3_client = boto3.client(
-                's3',
-                endpoint_url=account1_endpoint,
-                aws_access_key_id=account1_key_id,
-                aws_secret_access_key=account1_app_key
-            )
-            print(f"[instapods_hub] Account #1 client initialized")
-        except Exception as e:
-            print(f"[instapods_hub] Failed to initialize Account #1 client: {e}")
-    
-    # Initialize Account #2 client (Light Storage)
-    account2_endpoint = os.getenv("ACCOUNT_2_ENDPOINT")
-    account2_key_id = os.getenv("ACCOUNT_2_KEY_ID")
-    account2_app_key = os.getenv("ACCOUNT_2_APPLICATION_KEY")
-    
-    if account2_key_id and account2_app_key:
-        try:
-            account2_s3_client = boto3.client(
-                's3',
-                endpoint_url=account2_endpoint,
-                aws_access_key_id=account2_key_id,
-                aws_secret_access_key=account2_app_key
-            )
-            print(f"[instapods_hub] Account #2 client initialized")
-        except Exception as e:
-            print(f"[instapods_hub] Failed to initialize Account #2 client: {e}")
-
-
-def initialize_mesh_coordinator():
-    """Initialize the MeshSyncCoordinator for Instapods Hub."""
-    global mesh_coordinator, db, supabase_client
-    
-    # Load environment variables
-    db_path = os.getenv("DATABASE_PATH", "local_cache.db")
-    device_id = os.getenv("INSTAPODS_DEVICE_ID", "INSTAPODS_HUB")
-    b2_bucket_name = os.getenv("MESH_SYNC_BUCKET", "lab-mesh-sync")
-    b2_endpoint_url = os.getenv("MESH_SYNC_ENDPOINT", "https://s3.eu-central-003.backblazeb2.com")
-    b2_access_key_id = os.getenv("MESH_SYNC_KEY_ID", "")
-    b2_secret_access_key = os.getenv("MESH_SYNC_APPLICATION_KEY", "")
-    
-    # Initialize database for API endpoints (fallback)
-    db = CacheDatabase(db_path=db_path)
-    print(f"[instapods_hub] CacheDatabase initialized with path: {db_path}")
-    
-    # Initialize Supabase client for cloud data access
-    if SUPABASE_AVAILABLE:
-        supabase_url = os.getenv("SUPABASE_URL")
-        supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
-        if supabase_url and supabase_key:
-            try:
-                supabase_client = create_client(supabase_url, supabase_key)
-                print(f"[instapods_hub] Supabase client initialized")
-            except Exception as e:
-                print(f"[instapods_hub] Failed to initialize Supabase client: {e}")
-        else:
-            print("[instapods_hub] Supabase credentials not configured")
-    else:
-        print("[instapods_hub] Supabase library not available")
-    
-    mesh_coordinator = MeshSyncCoordinator(
-        db_path=db_path,
-        device_id=device_id,
-        b2_bucket_name=b2_bucket_name,
-        b2_endpoint_url=b2_endpoint_url,
-        b2_access_key_id=b2_access_key_id,
-        b2_secret_access_key=b2_secret_access_key,
-        hub_mode=True  # Hub is the sole B2 poller; devices pull from Supabase
-    )
-    
-    print(f"[instapods_hub] MeshSyncCoordinator initialized with device_id: {device_id}")
-
-
 def main():
-    """Main entry point for Instapods Hub."""
+    """Main entry point for Instapods Hub (for local testing)."""
     print("=" * 60)
     print("Instapods Hub - Always-on Cloud Sync Coordinator")
     print("=" * 60)
