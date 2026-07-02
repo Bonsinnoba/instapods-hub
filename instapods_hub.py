@@ -433,7 +433,14 @@ async def get_resources(project_id: Optional[str] = None):
         if project_id:
             query = query.eq('project_id', project_id)
         response = query.execute()
-        return response.data
+        # Convert file_type to uppercase to match mobile app enum
+        resources = []
+        for doc in response.data:
+            file_type = doc.get('file_type', 'other')
+            file_type_upper = file_type.upper() if file_type else 'OTHER'
+            doc['file_type'] = file_type_upper
+            resources.append(doc)
+        return resources
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -493,6 +500,9 @@ def sync_loop():
                 mesh_coordinator.check_network_status()
                 
                 if mesh_coordinator.is_online:
+                    # Keep Supabase connection alive to prevent free-tier suspension
+                    mesh_coordinator._keep_supabase_alive()
+                    
                     # Pull from B2
                     applied_count = mesh_coordinator.pull_from_cloud()
                     
