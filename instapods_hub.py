@@ -6,6 +6,7 @@ This module runs on the Instapods cloud server and acts as the central hub for:
 - Mirroring transactions to Supabase
 - Pulling mobile notes from Supabase into the mesh
 - Serving signed URLs for B2 file access
+- Serving mobile client transaction sync and AI helper APIs
 """
 
 import os
@@ -14,7 +15,7 @@ import time
 import threading
 import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
@@ -24,10 +25,12 @@ sys.path.insert(0, str(Path(__file__).parent / "lab_app"))
 
 from fastapi import FastAPI, HTTPException, Depends, Query, File, Form, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
 import uvicorn
 
 from database.mesh_sync_coordinator import MeshSyncCoordinator
 from database.cache_db import CacheDatabase
+from database.mobile_cloud_api import MobileCloudAPI, create_mobile_cloud_api
 
 try:
     from supabase import create_client, Client
@@ -47,7 +50,7 @@ security = HTTPBearer()
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 
 
-# Initialization functions (must be defined before app)
+# Initialization functions
 
 def initialize_file_storage_clients():
     """Initialize S3 clients for file storage buckets."""
@@ -136,6 +139,20 @@ def initialize_mesh_coordinator():
     print(f"[instapods_hub] MeshSyncCoordinator initialized with device_id: {device_id}")
 
 
+def initialize_mobile_cloud_api():
+    """Initialize the MobileCloudAPI for Instapods Hub."""
+    global mobile_cloud_api
+    try:
+        mobile_cloud_api = create_mobile_cloud_api()
+        if mobile_cloud_api and mobile_cloud_api.is_available():
+            print("[instapods_hub] Mobile cloud API initialized successfully")
+        else:
+            print("[instapods_hub] Mobile cloud API not available - check B2 credentials")
+    except Exception as e:
+        print(f"[instapods_hub] Failed to initialize mobile cloud API: {e}")
+        mobile_cloud_api = None
+
+
 def start_background_sync():
     """Start the background sync loop in a separate thread."""
     global sync_running
@@ -150,11 +167,17 @@ app = FastAPI(
     title="Instapods Hub",
     description="Always-on cloud sync coordinator for Lab R&D mesh",
     version="1.0.0",
-    on_startup=[initialize_file_storage_clients, initialize_mesh_coordinator, start_background_sync]
+    on_startup=[
+        initialize_file_storage_clients,
+        initialize_mesh_coordinator,
+        initialize_mobile_cloud_api,
+        start_background_sync
+    ]
 )
 
 # Global state
 mesh_coordinator: Optional[MeshSyncCoordinator] = None
+mobile_cloud_api: Optional[MobileCloudAPI] = None
 last_sync_timestamp: int = 0
 sync_running = False
 
@@ -221,6 +244,8 @@ async def debug_info():
         "supabase_key_set": bool(os.getenv("SUPABASE_SERVICE_KEY")),
         "db_initialized": db is not None,
         "mesh_coordinator_initialized": mesh_coordinator is not None,
+        "mobile_cloud_api_initialized": mobile_cloud_api is not None,
+        "mobile_cloud_api_available": mobile_cloud_api.is_available() if mobile_cloud_api else False
     }
 
 
@@ -388,37 +413,36 @@ async def get_project(project_id: str):
 
 @app.get("/api/experiments")
 async def get_experiments(project_id: Optional[str] = None):
-    """Get all experiments from Supabase (experiments table), optionally filtered by project ID."""
+    """Get all experiments from Supabase (rd_logs table alias), optionally filtered by project ID."""
     if not supabase_client:
         raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
-        query = supabase_client.table('experiments').select('*')
+        query = supabase_client.table('rd_logs').select('*')
         if project_id:
             query = query.eq('project_id', project_id)
         response = query.execute()
         return response.data
     except Exception as e:
         # Table might not exist - return empty array for graceful degradation
-        if 'experiments' in str(e) or 'PGRST205' in str(e):
+        if 'rd_logs' in str(e) or 'PGRST205' in str(e):
             return []
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/experiments/{experiment_id}")
 async def get_experiment(experiment_id: str):
-    """Get a specific experiment by ID from Supabase (experiments table)."""
+    """Get a specific experiment by ID from Supabase (rd_logs table)."""
     if not supabase_client:
         raise HTTPException(status_code=503, detail="Supabase client not initialized")
     try:
-        response = supabase_client.table('experiments').select('*').eq('id', experiment_id).execute()
+        response = supabase_client.table('rd_logs').select('*').eq('id', experiment_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Experiment not found")
         return response.data[0]
     except HTTPException:
         raise
     except Exception as e:
-        # Table might not exist - return 404 for graceful degradation
-        if 'experiments' in str(e) or 'PGRST205' in str(e):
+        if 'rd_logs' in str(e) or 'PGRST205' in str(e):
             raise HTTPException(status_code=404, detail="Experiment not found")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -459,7 +483,6 @@ async def get_notes(project_id: Optional[str] = None, experiment_id: Optional[st
         response = query.execute()
         return response.data
     except Exception as e:
-        # Table might not exist - return empty array for graceful degradation
         if 'notebook_entries' in str(e) or 'PGRST205' in str(e):
             return []
         raise HTTPException(status_code=500, detail=str(e))
@@ -478,6 +501,206 @@ async def get_findings(experiment_id: Optional[str] = None, severity: Optional[s
             query = query.eq('severity', severity)
         response = query.execute()
         return {"findings": response.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Mobile Cloud API for Direct Cloud Access ---
+
+@app.get("/api/mobile/cloud-status")
+async def get_mobile_cloud_status():
+    """Get mobile cloud API status."""
+    if not mobile_cloud_api:
+        return {
+            "status": "disabled",
+            "message": "Mobile cloud API not initialized - check B2 credentials"
+        }
+    
+    return {
+        "status": "active" if mobile_cloud_api.is_available() else "disabled",
+        "b2_bucket": mobile_cloud_api.b2_bucket_name,
+        "endpoint": mobile_cloud_api.b2_endpoint_url
+    }
+
+
+@app.get("/api/mobile/transactions")
+async def get_mobile_transactions(since_timestamp: Optional[int] = None):
+    """Get mesh transactions from cloud for mobile devices."""
+    if not mobile_cloud_api or not mobile_cloud_api.is_available():
+        raise HTTPException(status_code=503, detail="Mobile cloud API not available")
+    
+    try:
+        transactions = mobile_cloud_api.get_mesh_transactions(since_timestamp)
+        return {"transactions": transactions, "count": len(transactions)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mobile/db-snapshot")
+async def get_mobile_db_snapshot():
+    """Get the latest database snapshot from cloud for mobile devices."""
+    if not mobile_cloud_api or not mobile_cloud_api.is_available():
+        raise HTTPException(status_code=503, detail="Mobile cloud API not available")
+    
+    try:
+        snapshot = mobile_cloud_api.get_latest_db_snapshot()
+        if not snapshot:
+            raise HTTPException(status_code=404, detail="No database snapshot found")
+        
+        return {
+            "snapshot_key": snapshot['snapshot_key'],
+            "last_modified": snapshot['last_modified'],
+            "size": snapshot['size']
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mobile/file-url")
+async def get_mobile_file_url(file_name: str, file_size: int):
+    """Get the public URL for a file stored in cloud."""
+    if not mobile_cloud_api or not mobile_cloud_api.is_available():
+        raise HTTPException(status_code=503, detail="Mobile cloud API not available")
+    
+    try:
+        url = mobile_cloud_api.get_file_url(file_name, file_size)
+        if not url:
+            raise HTTPException(status_code=404, detail="File URL not found")
+        
+        return {"url": url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/mobile/push-transaction")
+async def push_mobile_transaction(transaction: Dict[str, Any]):
+    """Push a transaction from mobile device to cloud (for mobile-to-lab sync)."""
+    if not mobile_cloud_api or not mobile_cloud_api.is_available():
+        raise HTTPException(status_code=503, detail="Mobile cloud API not available")
+
+    try:
+        success = mobile_cloud_api.push_mobile_transaction(transaction)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to push transaction")
+
+        return {"success": True, "message": "Transaction pushed to cloud"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Mobile Cloud AI API (Gemini) ---
+
+class StageReviewRequest(BaseModel):
+    stage_context: Dict[str, Any]
+
+class ComponentAlternatesRequest(BaseModel):
+    component_details: str
+
+class FailureDiagnosisRequest(BaseModel):
+    observation: str
+    experiment_history: List[Dict[str, Any]]
+
+class TestScriptRequest(BaseModel):
+    requirement: str
+    language: str = "python"
+
+class ChatRequest(BaseModel):
+    message: str
+    conversation_history: List[Dict[str, str]] = None
+
+
+@app.post("/api/mobile/ai/stage-review")
+async def mobile_review_stage_design(request: StageReviewRequest):
+    """Feature A: Stage Design Reviewer - Analyze project stage for thermal risks, component mismatches, or logic flaws."""
+    if not mobile_cloud_api or not mobile_cloud_api.is_gemini_available():
+        raise HTTPException(status_code=503, detail="Gemini AI not available. Configure GEMINI_API_KEY")
+
+    try:
+        from fastapi.responses import StreamingResponse
+
+        def generate():
+            for chunk in mobile_cloud_api.review_stage_design(request.stage_context):
+                yield chunk
+
+        return StreamingResponse(generate(), media_type="text/plain")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/mobile/ai/component-alternates")
+async def mobile_find_component_alternates(request: ComponentAlternatesRequest):
+    """Feature B: Smart Substitute Finder - Find pin-compatible, drop-in alternatives for components."""
+    if not mobile_cloud_api or not mobile_cloud_api.is_gemini_available():
+        raise HTTPException(status_code=503, detail="Gemini AI not available. Configure GEMINI_API_KEY")
+
+    try:
+        from fastapi.responses import StreamingResponse
+
+        def generate():
+            for chunk in mobile_cloud_api.find_component_alternates(request.component_details):
+                yield chunk
+
+        return StreamingResponse(generate(), media_type="text/plain")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/mobile/ai/failure-diagnosis")
+async def mobile_diagnose_circuit_failure(request: FailureDiagnosisRequest):
+    """Feature C: Failure Mode Analyzer - Diagnose circuit failures based on observations and experiment history."""
+    if not mobile_cloud_api or not mobile_cloud_api.is_gemini_available():
+        raise HTTPException(status_code=503, detail="Gemini AI not available. Configure GEMINI_API_KEY")
+
+    try:
+        from fastapi.responses import StreamingResponse
+
+        def generate():
+            for chunk in mobile_cloud_api.diagnose_circuit_failure(request.observation, request.experiment_history):
+                yield chunk
+
+        return StreamingResponse(generate(), media_type="text/plain")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/mobile/ai/test-script")
+async def mobile_generate_test_script(request: TestScriptRequest):
+    """Feature D: Lab Automation Scripting - Generate production-ready test automation scripts."""
+    if not mobile_cloud_api or not mobile_cloud_api.is_gemini_available():
+        raise HTTPException(status_code=503, detail="Gemini AI not available. Configure GEMINI_API_KEY")
+
+    try:
+        from fastapi.responses import StreamingResponse
+
+        def generate():
+            for chunk in mobile_cloud_api.generate_test_script(request.requirement, request.language):
+                yield chunk
+
+        return StreamingResponse(generate(), media_type="text/plain")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/mobile/ai/chat")
+async def mobile_gemini_chat(request: ChatRequest):
+    """General Chat Interface - Handle general conversations with Gemini."""
+    if not mobile_cloud_api or not mobile_cloud_api.is_gemini_available():
+        raise HTTPException(status_code=503, detail="Gemini AI not available. Configure GEMINI_API_KEY")
+
+    try:
+        from fastapi.responses import StreamingResponse
+
+        def generate():
+            for chunk in mobile_cloud_api.chat(request.message, request.conversation_history):
+                yield chunk
+
+        return StreamingResponse(generate(), media_type="text/plain")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -536,6 +759,9 @@ def main():
     
     # Initialize mesh coordinator
     initialize_mesh_coordinator()
+    
+    # Initialize mobile cloud API
+    initialize_mobile_cloud_api()
     
     # Start background sync loop
     start_background_sync()

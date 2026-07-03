@@ -26,6 +26,9 @@ cp "$SOURCE_DIR/lab_app/database/cache_db.py" "$TARGET_DIR/lab_app/database/"
 echo "Copying cloud_sync_engine.py..."
 cp "$SOURCE_DIR/lab_app/database/cloud_sync_engine.py" "$TARGET_DIR/lab_app/database/"
 
+echo "Copying mobile_cloud_api.py..."
+cp "$SOURCE_DIR/lab_app/database/mobile_cloud_api.py" "$TARGET_DIR/lab_app/database/"
+
 echo "Copying auth_manager.py..."
 cp "$SOURCE_DIR/lab_app/auth/auth_manager.py" "$TARGET_DIR/lab_app/auth/"
 
