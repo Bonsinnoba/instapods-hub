@@ -154,6 +154,17 @@ CREATE TABLE IF NOT EXISTS materials (
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS others (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT,
+    location TEXT,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Usage Tracking
 CREATE TABLE IF NOT EXISTS component_usage (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,

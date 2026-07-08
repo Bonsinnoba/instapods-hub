@@ -381,6 +381,87 @@ async def upload_file(
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
 
 
+@app.get("/download/{filename}")
+async def download_file(
+    filename: str,
+    file_size: Optional[int] = Query(None, description="File size in bytes (optional)"),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Download a file directly from B2 (streaming, no server-side caching).
+    
+    Requires Bearer JWT authentication.
+    
+    Args:
+        filename: The filename to download
+        file_size: Optional file size in bytes to determine storage bucket
+        credentials: JWT credentials
+        
+    Returns:
+        File response streaming from B2
+    """
+    verify_jwt(credentials)
+    
+    # Look up file_size in database if not provided
+    if file_size is None and mesh_coordinator and mesh_coordinator.db_path:
+        try:
+            import sqlite3
+            conn = sqlite3.connect(mesh_coordinator.db_path)
+            cursor = conn.cursor()
+            
+            # Clean suffix to match original database path
+            clean_filename = filename
+            if filename.endswith('.enc'):
+                clean_filename = filename[:-4]
+            elif filename.endswith('.gz'):
+                clean_filename = filename[:-3]
+                
+            cursor.execute("""
+                SELECT file_size FROM knowledge_vault 
+                WHERE file_path LIKE '%' || ? OR file_path LIKE '%' || ?
+            """, (filename, clean_filename))
+            row = cursor.fetchone()
+            if row:
+                file_size = row[0]
+            conn.close()
+        except Exception as db_err:
+            print(f"[instapods_hub] DB lookup error for {filename}: {db_err}")
+    
+    # Determine which S3 client to use
+    if file_size is not None and file_size >= 50 * 1024 * 1024:
+        s3_client = account1_s3_client
+        bucket_name = os.getenv("ACCOUNT_1_BUCKET", "lab-heavy-storage")
+    else:
+        s3_client = account2_s3_client
+        bucket_name = os.getenv("ACCOUNT_2_BUCKET", "lab-light-storage")
+    
+    if not s3_client:
+        raise HTTPException(status_code=503, detail="S3 client not available for this bucket")
+    
+    try:
+        # Stream file from B2
+        response = s3_client.get_object(Bucket=bucket_name, Key=filename)
+        
+        from fastapi.responses import StreamingResponse
+        import io
+        
+        def iterfile():
+            with io.BytesIO(response['Body'].read()) as f:
+                yield from f
+        
+        return StreamingResponse(
+            iterfile(),
+            media_type='application/octet-stream',
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}"',
+                'Content-Length': str(response['ContentLength'])
+            }
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download file: {str(e)}")
+
+
 # --- Mobile API Endpoints ---
 
 @app.get("/api/projects")
