@@ -19,6 +19,10 @@ env/
 *.sqlite3
 local_cache.db
 
+# state files
+.mesh_device_id
+.mesh_supabase_ping_timestamp
+
 # Environment
 .env
 .env.local
